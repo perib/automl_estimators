@@ -96,7 +96,7 @@ def get_dataset(
 
     return split_data(X, _y, splits=splits, seed=seed)  # type: ignore
 
-class AmltkEstimator(BaseEstimator):
+class SMACEstimator(BaseEstimator):
 
     def __init__(self, pipeline, cv, scorers, other_objective_functions=None, max_time_seconds=5, n_jobs=1, seed=None, max_evals=None):
         self.pipeline = pipeline
@@ -119,7 +119,7 @@ class AmltkEstimator(BaseEstimator):
 
 
     def fit(self, X, y):
-        # bucket = PathBucket("AMLTKEstimator_TMP", clean=True, create=True)
+        # bucket = PathBucket("SMACEstimator_TMP", clean=True, create=True)
         # data_bucket = bucket / "data"
         # data_bucket.store(
         #     {

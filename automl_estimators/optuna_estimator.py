@@ -195,8 +195,10 @@ def get_params(trial, sequence, random_state=None, n_jobs=1):
 
 def params_to_pipeline(params):
     steps = []
+    i=0
     for step, param in params:
-        steps.append((step, name_to_class[step](**param)))
+        steps.append((f"{step}_{i}", name_to_class[step](**param)))
+        i+=1
 
     return Pipeline(steps)
 
@@ -204,7 +206,9 @@ def get_pipeline(trial, sequence):
     steps = []
     for i, step in enumerate(sequence):
         params = all_params[step](trial)
-        steps.append((step, name_to_class[step](**params)))
+        # steps.append((step, name_to_class[step](**params)))
+        steps.append((f"{step}_{i}", name_to_class[step](**params)))        
+
         
     return Pipeline(steps)
 

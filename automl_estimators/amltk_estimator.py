@@ -7,6 +7,7 @@ from collections.abc import Iterable
 import pandas as pd
 import sklearn
 import numpy as np
+from amltk.optimization.optimizers.optuna import OptunaOptimizer
 
 """HPO
 # Flags: doc-Runnable
@@ -96,9 +97,9 @@ def get_dataset(
 
     return split_data(X, _y, splits=splits, seed=seed)  # type: ignore
 
-class SMACEstimator(BaseEstimator):
+class AMLTKEstimator(BaseEstimator):
 
-    def __init__(self, pipeline, cv, scorers, other_objective_functions=None, max_time_seconds=5, n_jobs=1, seed=None, max_evals=None):
+    def __init__(self, pipeline, cv, scorers, other_objective_functions=None, max_time_seconds=5, n_jobs=1, seed=None, max_evals=None, backend="SMAC"):
         self.pipeline = pipeline
         self.max_time_seconds = max_time_seconds
         self.n_jobs = n_jobs
@@ -107,7 +108,7 @@ class SMACEstimator(BaseEstimator):
         self.cv = cv
         self.seed = seed
         self.max_evals = max_evals
-   
+        self.backend = backend
 
         self._scorers = [sklearn.metrics.get_scorer(scoring) for scoring in self.scorers]
         self._scorer_names = [scoring for scoring in self.scorers]
@@ -119,7 +120,7 @@ class SMACEstimator(BaseEstimator):
 
 
     def fit(self, X, y):
-        # bucket = PathBucket("SMACEstimator_TMP", clean=True, create=True)
+        # bucket = PathBucket("AMLTKEstimator_TMP", clean=True, create=True)
         # data_bucket = bucket / "data"
         # data_bucket.store(
         #     {
@@ -131,7 +132,14 @@ class SMACEstimator(BaseEstimator):
         scheduler = Scheduler.with_processes(1)
 
         metrics = [Metric(scorer, minimize=False) for scorer in self.objective_names] #bounds?
-        optimizer = SMACOptimizer.create(
+        
+        if self.backend == "SMAC":
+            optimizer_class = SMACOptimizer
+        elif self.backend.lower() == "optuna":
+            optimizer_class = OptunaOptimizer
+
+        
+        optimizer = optimizer_class.create(
             space=self.pipeline,  # <!> (1)!
             metrics=metrics,
             # bucket=bucket,

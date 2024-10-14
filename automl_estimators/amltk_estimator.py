@@ -9,100 +9,83 @@ import sklearn
 import numpy as np
 from amltk.optimization.optimizers.optuna import OptunaOptimizer
 
-"""HPO
-# Flags: doc-Runnable
-
-!!! note "Dependencies"
-
-    Requires the following integrations and dependencies:
-
-    * `#!bash pip install openml amltk[smac, sklearn]`
-
-This example shows the basic of setting up a simple HPO loop around a
-`RandomForestClassifier`. We will use the [OpenML](https://openml.org) to
-get a dataset and also use some static preprocessing as part of our pipeline
-definition.
-
-You can fine the [pipeline guide here](../guides/pipelines.md)
-and the [optimization guide here](../guides/optimization.md) to learn more.
-
-You can skip the imports sections and go straight to the
-[pipeline definition](#pipeline-definition).
-
-## Dataset
-
-Below is just a small function to help us get the dataset from OpenML and encode the
-labels.
-"""
 
 from typing import Any
 
-import openml
-from sklearn.preprocessing import LabelEncoder
-
-from amltk.sklearn import split_data
-
 import numpy as np
-import openml
-from sklearn.compose import make_column_selector
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_selection import VarianceThreshold
-from sklearn.impute import SimpleImputer
-from sklearn.metrics import accuracy_score
-from sklearn.neural_network import MLPClassifier
-from sklearn.preprocessing import (
-    LabelEncoder,
-    MinMaxScaler,
-    OneHotEncoder,
-    RobustScaler,
-    StandardScaler,
-)
-from sklearn.svm import SVC
-
-from amltk.data.conversions import probabilities_to_classes
-from amltk.ensembling.weighted_ensemble_caruana import weighted_ensemble_caruana
 from amltk.optimization import History, Metric, Trial
 from amltk.optimization.optimizers.smac import SMACOptimizer
-from amltk.pipeline import Choice, Component, Sequential, Split
 from amltk.scheduling import Scheduler
-from amltk.sklearn.data import split_data
-from amltk.store import PathBucket
 from amltk.optimization import Metric
 from amltk.scheduling import Scheduler
 from amltk.optimization.optimizers.smac import SMACOptimizer
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder
 
 from amltk.pipeline import Component, Node, Sequential, Split
 from functools import partial
 import pandas as pd
 
-def get_dataset(
-    dataset_id: str | int,
-    *,
-    seed: int,
-    splits: dict[str, float],
-) -> dict[str, Any]:
-    dataset = openml.datasets.get_dataset(
-        dataset_id,
-        download_data=True,
-        download_features_meta_data=False,
-        download_qualities=False,
-    )
 
-    target_name = dataset.default_target_attribute
-    X, y, _, _ = dataset.get_data(dataset_format="dataframe", target=target_name)
-    _y = LabelEncoder().fit_transform(y)
 
-    return split_data(X, _y, splits=splits, seed=seed)  # type: ignore
+def recursive_set_n_jobs(est, n_jobs):
+    if isinstance(est, sklearn.pipeline.Pipeline):
+        [recursive_set_n_jobs(estimator, n_jobs=n_jobs) for _,estimator in est.steps]
+        return est
+    if isinstance(est, sklearn.pipeline.FeatureUnion):
+        [recursive_set_n_jobs(estimator, n_jobs=n_jobs) for _,estimator in est.transformer_list]
+        return est
+
+    cur_params = est.get_params()
+    if 'n_jobs' in cur_params:
+        est.set_params(n_jobs=n_jobs)
+    
+    return est
 
 class AMLTKEstimator(BaseEstimator):
 
-    def __init__(self, pipeline, cv, scorers, other_objective_functions=None, max_time_seconds=5, n_jobs=1, seed=None, max_evals=None, backend="SMAC"):
+    def __init__(self, 
+                 pipeline, 
+                 cv, 
+                 scorers, 
+                 other_objective_functions=None, 
+                 max_time_mins=10, 
+                 n_jobs=1, 
+                 estimator_n_jobs_override=None,
+                 seed=None, 
+                 max_evals=None, 
+                 backend="SMAC"):
+        """
+        Wraps the AMLTK optimization framework to create a scikit-learn compatible estimator.
+
+        Parameters
+        ----------
+        pipeline: amltk.pipeline.Node
+            The pipeline search space to optimize.
+        cv: int or cross-validation generator
+            The cross-validation strategy to use.
+        scorers: list[str]
+            The scoring functions to use. Can be any of the scoring functions in sklearn.metrics or a custom function with signature (estimator, X, y) -> float. 
+            These take in a fitted estimator, X, and y and return a float. The scorers are evaluated with cross-validation as set by the CV parameter.
+        other_objective_functions: list[callable]
+            Other objective functions to use. Each callable should take in a unfitted estimator and return a float. These are not evaluated with cross-validation.
+        max_time_mins: int
+            The maximum time in seconds to run the optimization for.
+        n_jobs: int
+            The number of jobs to run in parallel. Used to evaluate pipelines in parallel with the AMLTK framework.
+        estimator_n_jobs_override: int
+            Sets the n_jobs parameter for all estimators in the pipeline. If None, the n_jobs parameter is not modified.
+            Whereas n_jobs evaluates multiple pipelines in parallel, estimator_n_jobs_override parallelizes the fit of an individual pipeline.
+        seed: int
+            The seed to use for reproducibility.
+        max_evals: int
+            The maximum number of pipeline evaluations to run. If None, the optimization runs until the max_time_mins is reached.
+        backend: str
+            The optimization backend to use. Can be "SMAC" or "Optuna".
+            
+        """
         self.pipeline = pipeline
-        self.max_time_seconds = max_time_seconds
+        self.max_time_mins = max_time_mins
         self.n_jobs = n_jobs
+        self.estimator_n_jobs_override = estimator_n_jobs_override
         self.scorers = scorers
         self.other_objective_functions = other_objective_functions
         self.cv = cv
@@ -133,10 +116,12 @@ class AMLTKEstimator(BaseEstimator):
 
         metrics = [Metric(scorer, minimize=False) for scorer in self.objective_names] #bounds?
         
-        if self.backend == "SMAC":
+        if self.backend.lower() == "smac":
             optimizer_class = SMACOptimizer
         elif self.backend.lower() == "optuna":
             optimizer_class = OptunaOptimizer
+        else:
+            raise ValueError(f"Backend {self.backend} not supported. Must be 'SMAC' or 'Optuna'")
 
         
         optimizer = optimizer_class.create(
@@ -148,7 +133,7 @@ class AMLTKEstimator(BaseEstimator):
 
         #import partial
         # target_function_p = partial(target_function,X=X, y=y, scorers=self.scorers, cv=self.cv, other_objective_functions=self.other_objective_functions, objective_names=self.objective_names)
-        target_function_p = partial(target_function,X=X, y=y, scorers=self.scorers, cv=self.cv, other_objective_functions=self.other_objective_functions, objective_names=self.objective_names)
+        target_function_p = partial(target_function,X=X, y=y, scorers=self.scorers, cv=self.cv, other_objective_functions=self.other_objective_functions, objective_names=self.objective_names, estimator_n_jobs_override=self.estimator_n_jobs_override)
         task = scheduler.task(target_function_p)
 
         @scheduler.on_start
@@ -190,7 +175,7 @@ class AMLTKEstimator(BaseEstimator):
         def stop_scheduler_on_cancelled(_: Any) -> None:
             scheduler.stop()
 
-        scheduler.run(timeout=self.max_time_seconds, wait=False)
+        scheduler.run(timeout=self.max_time_mins*60, wait=False)
 
         print("Trial history:")
         history_df = trial_history.df()
@@ -261,6 +246,7 @@ def target_function(
     X,
     y,
     cv,
+    estimator_n_jobs_override=None,
 ) -> Trial.Report:
     trial.store({"config.json": trial.config})
     # Load in data
@@ -272,6 +258,9 @@ def target_function(
 
     # Configure the pipeline with the trial config before building it.
     sklearn_pipeline = _pipeline.configure(trial.config).build("sklearn")
+
+    if estimator_n_jobs_override is not None:
+        sklearn_pipeline = recursive_set_n_jobs(sklearn_pipeline, estimator_n_jobs_override)
 
     # Fit the pipeline, indicating when you want to start the trial timing
     try:

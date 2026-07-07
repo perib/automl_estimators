@@ -109,15 +109,18 @@ def params_RandomForestClassifier(trial, random_state, name=None, n_jobs=1,):
 
 def params_XGBClassifier(trial, random_state, name=None, n_jobs=1,):
     return {
-        'learning_rate': trial.suggest_float(f'learning_rate_{name}', 1e-3, 1, log=True),
-        'subsample': trial.suggest_float(f'subsample_{name}', 0.1, 1.0),
+        'learning_rate': trial.suggest_float(f'learning_rate_{name}', 1e-3, .3, log=True),
+        'gamma': trial.suggest_float(f'gamma_{name}', 0,10),
+        'subsample': trial.suggest_float(f'subsample_{name}', 0.5, 1.0),
         'min_child_weight': trial.suggest_int(f'min_child_weight_{name}', 1, 21),
-        #'booster': trial.suggest_categorical(name='booster_{name}', choices=['gbtree', 'dart']),
-        'n_estimators': 100,
-        'max_depth': trial.suggest_int(f'max_depth_{name}', 1, 11),
+        'n_estimators': trial.suggest_int(f'n_estimators_{name}', 50, 500, step=25),
+        'max_depth': trial.suggest_int(f'max_depth_{name}', 2, 8),
+        'reg_alpha': trial.suggest_float(f'reg_alpha_{name}', 1e-4, 10, log=True),
+        'reg_lambda': trial.suggest_float(f'reg_lambda_{name}', 1e-4, 10, log=True),
+        'colsample_bytree': trial.suggest_float(f'colsample_bytree_{name}', 0.5, 1.0),
         'n_jobs': n_jobs,
-        #'use_label_encoder' : True,
         'random_state': random_state,
+        'enable_categorical':True,
     }
 
 def params_KNeighborsClassifier(trial, random_state, name=None, n_jobs=1, n_samples=10):
@@ -212,13 +215,13 @@ def get_pipeline(trial, sequence):
         
     return Pipeline(steps)
 
-def objective(trial, X_train, y_train, sequence, scoring, cv, random_state, n_jobs=1):
+def objective(trial, X_train, y_train, sequence, scoring, cv, random_state, groups=None, n_jobs=1):
     try:
         params = get_params(trial, sequence, random_state=random_state, n_jobs=n_jobs)
         pipeline = params_to_pipeline(params)
         trial.set_user_attr('params', params)
         #cross val score
-        return sklearn.model_selection.cross_val_score(pipeline, X_train, y_train, scoring=scoring, cv=cv).mean()
+        return sklearn.model_selection.cross_val_score(pipeline, X_train, y_train, scoring=scoring, cv=cv, groups=groups).mean()
     except Exception as e:
         print(f"failed error {e}")
         print(traceback.format_exc())
@@ -236,14 +239,15 @@ class OptunaEstimator(sklearn.base.BaseEstimator):
         self.timeout = timeout
         self.random_state = random_state
 
+
         self.fitted_pipeline_ = None
 
         
-    def fit(self, X, y):
+    def fit(self, X, y, groups=None):
         print("start fitting")
         sampler = optuna.samplers.TPESampler(seed=self.random_state)
         self.study = optuna.create_study(direction='maximize', sampler=sampler)
-        objective_fn = lambda trial: objective(trial, X, y, self.sequence, self.scorer, cv=self.cv, random_state=self.random_state, n_jobs=self.est_n_jobs)
+        objective_fn = lambda trial: objective(trial, X, y, self.sequence, self.scorer, cv=self.cv, random_state=self.random_state, groups=groups, n_jobs=self.est_n_jobs)
         self.study.optimize(objective_fn, n_trials=self.n_trials, n_jobs=self.n_jobs, timeout=self.timeout)
         best_trial = self.study.best_trial
         best_params = best_trial.user_attrs['params']
